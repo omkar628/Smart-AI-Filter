@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SmartFeed AI</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup-shell">
+    <section class="hero-card">
+      <p class="eyebrow">SmartFeed AI</p>
+      <h1>Shape your YouTube homepage</h1>
+      <p class="hero-copy">Choose the topics you want more of and assign each one a share of your feed.</p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Interest Mix</h2>
+          <p>Keep your total at exactly 100%.</p>
+        </div>
+        <button id="add-topic-btn" class="ghost-button" type="button">Add topic</button>
+      </div>
+
+      <div class="summary-card">
+        <div class="summary-row">
+          <span>Total allocation</span>
+          <strong id="allocation-total">0%</strong>
+        </div>
+        <div class="progress-track" aria-hidden="true">
+          <div id="allocation-bar" class="progress-bar"></div>
+        </div>
+        <p id="allocation-hint" class="allocation-hint">Add your topics and balance them to 100%.</p>
+      </div>
+
+      <div id="topics-container" class="topics-list"></div>
+
+      <template id="topic-row-template">
+        <div class="topic-row">
+          <div class="topic-fields">
+            <label>
+              <span>Topic</span>
+              <input type="text" class="topic-name" placeholder="Programming, UPSC, Football...">
+            </label>
+            <label class="weight-field">
+              <span>Share</span>
+              <div class="weight-input-wrap">
+                <input type="number" class="topic-weight" min="0" max="100" placeholder="0">
+                <span>%</span>
+              </div>
+            </label>
+          </div>
+          <button class="icon-button remove-topic-btn" type="button" aria-label="Remove topic">Remove</button>
+        </div>
+      </template>
+
+      <div id="status" class="status-message" role="status" aria-live="polite"></div>
+
+      <button id="save-btn" class="primary-button" type="button">Save preferences</button>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
