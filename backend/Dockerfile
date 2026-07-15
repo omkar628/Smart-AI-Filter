@@ -23,9 +23,7 @@ RUN python -m pip install --upgrade pip && \
 # Copy backend source
 COPY backend/ .
 
-# Railway automatically provides PORT
-ENV PORT=8000
+# Railway provides PORT at runtime. Default to 8080 for local container runs.
+EXPOSE 8080
 
-EXPOSE 8000
-
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]

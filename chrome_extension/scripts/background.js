@@ -1,4 +1,5 @@
-const API_URL = "http://localhost:8000/api/v1/rank-feed";
+const API_URL =
+    "https://smart-ai-filter-production.up.railway.app/api/v1/rank-feed";
 
 console.log("Background Service Worker Started");
 
