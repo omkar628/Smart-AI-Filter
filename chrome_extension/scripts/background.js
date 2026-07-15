@@ -1,13 +1,15 @@
-console.log("🚀 Background Service Worker Started");
+const API_URL = "http://localhost:8000/api/v1/rank-feed";
+
+console.log("Background Service Worker Started");
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log("📨 Message Received:", request);
+    console.log("Message Received:", request);
 
     if (request.action !== "analyzeFeed") {
         return;
     }
 
-    fetch("http://localhost:8000/api/v1/rank-feed", {
+    fetch(API_URL, {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -22,14 +24,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return response.json();
     })
     .then((data) => {
-        console.log("✅ Backend Response:", data);
+        console.log("Backend Response:", data);
         sendResponse({
             success: true,
             data: data.ranked_videos
         });
     })
     .catch((error) => {
-        console.error("❌ Fetch Error:", error);
+        console.error("Fetch Error:", error);
         sendResponse({
             success: false,
             error: error.toString()

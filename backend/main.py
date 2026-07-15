@@ -1,12 +1,17 @@
-from fastapi import FastAPI
+import os
+from functools import lru_cache
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from ml import AIRanker
 import uvicorn
 
-# Initialize App and load the AI Ranker singleton
 app = FastAPI(title="SmartFeed AI API")
-ranker = AIRanker()
+
+
+@lru_cache(maxsize=1)
+def get_ranker() -> AIRanker:
+    return AIRanker()
 
 # --- Pydantic Schemas for Validation ---
 class Video(BaseModel):
@@ -21,8 +26,45 @@ class RankRequest(BaseModel):
     videos: List[Video]
 
 # --- API Endpoints ---
+@app.get("/")
+async def root():
+    return {
+        "service": "SmartFeed AI API",
+        "status": "ok"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    groq_configured = bool(os.getenv("GROQ_API_KEY"))
+
+    try:
+        get_ranker()
+        model_status = "ready"
+    except Exception as error:
+        model_status = f"unavailable: {error}"
+
+    return {
+        "service": "SmartFeed AI API",
+        "status": "ok",
+        "groq_configured": groq_configured,
+        "model_status": model_status
+    }
+
+
 @app.post("/api/v1/rank-feed")
 async def rank_feed(request: RankRequest):
+    try:
+        ranker = get_ranker()
+    except Exception as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AI ranker is not available. "
+                f"Check model downloads and GROQ_API_KEY. Error: {error}"
+            )
+        ) from error
+
     # Convert Pydantic objects to standard dictionaries for the ML engine
     videos_dict = [v.model_dump() for v in request.videos]
     
@@ -33,4 +75,9 @@ async def rank_feed(request: RankRequest):
 
 # To run the server directly
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8000")),
+        reload=True
+    )

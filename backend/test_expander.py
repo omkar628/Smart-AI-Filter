@@ -4,7 +4,8 @@ from preference_expander import PreferenceExpander
 expander = PreferenceExpander()
 
 
-concepts = expander.expand_preference("DSA")
+expanded_preferences = expander.expand_preferences(["DSA"])
+concepts = expanded_preferences["DSA"]
 
 
 print("\nORIGINAL PREFERENCE:")

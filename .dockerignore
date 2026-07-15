@@ -1,0 +1,11 @@
+backend/venv/
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/.env
+.git/
+.gitignore
+.vscode/
+.pytest_cache/
+*.log
