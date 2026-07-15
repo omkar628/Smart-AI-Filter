@@ -1,5 +1,41 @@
-const API_URL =
-    "https://smart-ai-filter-production.up.railway.app/api/v1/rank-feed";
+const API_URLS = [
+    "https://smart-ai-filter-production.up.railway.app/api/v1/rank-feed",
+    "http://localhost:8000/api/v1/rank-feed"
+];
+
+async function postToBackend(payload) {
+    let lastError = null;
+
+    for (const apiUrl of API_URLS) {
+        try {
+            console.log(`Trying backend: ${apiUrl}`);
+
+            const response = await fetch(apiUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+            });
+
+            console.log("HTTP Status:", response.status);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(
+                    `Request failed for ${apiUrl} with ${response.status}: ${errorText}`
+                );
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error(`Backend attempt failed for ${apiUrl}:`, error);
+            lastError = error;
+        }
+    }
+
+    throw lastError || new Error("No backend endpoints are available.");
+}
 
 console.log("Background Service Worker Started");
 
@@ -10,19 +46,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return;
     }
 
-    fetch(API_URL, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            interests: request.interests,
-            videos: request.videos
-        })
-    })
-    .then((response) => {
-        console.log("HTTP Status:", response.status);
-        return response.json();
+    postToBackend({
+        interests: request.interests,
+        videos: request.videos
     })
     .then((data) => {
         console.log("Backend Response:", data);
