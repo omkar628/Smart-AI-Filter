@@ -13,6 +13,13 @@ app = FastAPI(title="SmartFeed AI API")
 def get_ranker() -> AIRanker:
     return AIRanker()
 
+
+@app.on_event("startup")
+async def warm_ranker() -> None:
+    # Keep AIRanker as a process-wide singleton so the model and caches
+    # are initialized once and then reused across requests.
+    get_ranker()
+
 # --- Pydantic Schemas for Validation ---
 class Video(BaseModel):
     video_id: str
@@ -67,7 +74,15 @@ async def rank_feed(request: RankRequest):
 
     # Convert Pydantic objects to standard dictionaries for the ML engine
     videos_dict = [v.model_dump() for v in request.videos]
-    
+
+    # Performance note for the frontend:
+    # - send only newly discovered videos
+    # - never resend previously processed videos
+    # - reuse existing rankings
+    # - merge new rankings into existing ones
+    #
+    # The current backend contract already supports incremental ranking.
+
     # Process through the AI pipeline
     ranked_results = ranker.rank_videos(videos_dict, request.interests)
     

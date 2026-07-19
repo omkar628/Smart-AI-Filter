@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
 
 import torch
@@ -10,14 +11,16 @@ from sentence_transformers import SentenceTransformer
 from preference_expander import PreferenceExpander
 
 
-@dataclass(frozen=True)
-class TopicProfile:
-    """Semantic representation for a single user interest topic."""
+ENABLE_PROFILING = False
 
-    name: str
-    concepts: List[str]
-    document: str
-    embedding: torch.Tensor
+
+@dataclass(frozen=True, slots=True)
+class TopicBatch:
+    """Reusable topic data cached for a specific ordered interest set."""
+
+    topic_names: Tuple[str, ...]
+    matched_concepts: Dict[str, Tuple[str, ...]]
+    topic_matrix: torch.Tensor
 
 
 class AIRanker:
@@ -38,10 +41,14 @@ class AIRanker:
 
         # Cache full preference expansions because the expander considers
         # all topics together to reduce semantic overlap.
-        self.preference_cache: Dict[Tuple[str, ...], Dict[str, List[str]]] = {}
+        self.preference_cache: Dict[Tuple[str, ...], Dict[str, Tuple[str, ...]]] = {}
 
         # Cache topic document embeddings by their exact semantic document.
         self.embedding_cache: Dict[str, torch.Tensor] = {}
+
+        # Cache reusable topic matrices so repeated requests do not rebuild
+        # topic documents or restack topic embeddings.
+        self.topic_batch_cache: Dict[Tuple[str, ...], TopicBatch] = {}
 
     def rank_videos(
         self,
@@ -54,29 +61,47 @@ class AIRanker:
             print("Returning 0 videos...")
             return []
 
+        timings: Dict[str, float] | None = {} if ENABLE_PROFILING else None
         interest_topics = list(interests.keys())
         if not interest_topics:
+            response_start = self._profile_start()
             final_feed = self._mark_all_unknown(videos)
+            self._profile_end(timings, "response generation", response_start)
+            self._report_profile(timings)
             print(f"Returning {len(final_feed)} videos...")
             return final_feed
 
         print("Expanding preferences...")
+        expansion_start = self._profile_start()
         expanded_preferences = self.get_expanded_preferences(interest_topics)
+        self._profile_end(timings, "preference expansion", expansion_start)
 
-        topic_profiles = self._build_topic_profiles(
+        topic_batch_start = self._profile_start()
+        topic_batch = self._get_topic_batch(
             interest_topics,
             expanded_preferences,
         )
+        self._profile_end(timings, "topic embedding generation", topic_batch_start)
 
         print(f"Ranking {len(videos)} videos...")
+        video_embedding_start = self._profile_start()
         video_embeddings = self._encode_video_batch(videos)
+        self._profile_end(timings, "video embedding generation", video_embedding_start)
 
+        similarity_start = self._profile_start()
+        best_indices, best_scores = self._compute_best_matches(
+            video_embeddings,
+            topic_batch,
+            interests,
+        )
+        self._profile_end(timings, "similarity computation", similarity_start)
+
+        response_start = self._profile_start()
         categorized_videos = self._categorize_videos(
             videos,
-            video_embeddings,
-            topic_profiles,
-            interests,
-            expanded_preferences,
+            topic_batch,
+            best_indices,
+            best_scores,
         )
 
         final_feed = self._apply_percentage_distribution(
@@ -84,6 +109,8 @@ class AIRanker:
             interests,
             total_visible=len(videos),
         )
+        self._profile_end(timings, "response generation", response_start)
+        self._report_profile(timings)
 
         print(f"Returning {len(final_feed)} videos...")
         return final_feed
@@ -91,7 +118,7 @@ class AIRanker:
     def get_expanded_preferences(
         self,
         preferences: Sequence[str],
-    ) -> Dict[str, List[str]]:
+    ) -> Dict[str, Tuple[str, ...]]:
         """Expand interests once per preference set and cache the result."""
 
         ordered_preferences = list(dict.fromkeys(preferences))
@@ -106,45 +133,52 @@ class AIRanker:
 
         return self.preference_cache[cache_key]
 
-    def _build_topic_profiles(
+    def _get_topic_batch(
         self,
         topics: Sequence[str],
         expanded_preferences: Mapping[str, Sequence[str]],
-    ) -> Dict[str, TopicProfile]:
-        """Build one semantic document and one cached embedding per topic."""
+    ) -> TopicBatch:
+        """Build or reuse cached topic documents and stacked embeddings."""
 
-        documents_by_topic = {
-            topic: self._build_topic_document(
+        cache_key = tuple(topics)
+        cached_batch = self.topic_batch_cache.get(cache_key)
+        if cached_batch is not None:
+            return cached_batch
+
+        topic_names = tuple(topics)
+        documents = tuple(
+            self._build_topic_document(
                 topic,
-                expanded_preferences.get(topic, [topic]),
+                expanded_preferences.get(topic, (topic,)),
             )
-            for topic in topics
-        }
+            for topic in topic_names
+        )
 
-        self._cache_missing_topic_embeddings(documents_by_topic)
+        self._cache_missing_topic_embeddings(documents)
 
-        topic_profiles: Dict[str, TopicProfile] = {}
-        for topic in topics:
-            concepts = list(expanded_preferences.get(topic, [topic]))
-            document = documents_by_topic[topic]
-            topic_profiles[topic] = TopicProfile(
-                name=topic,
-                concepts=concepts,
-                document=document,
-                embedding=self.embedding_cache[document],
-            )
+        topic_batch = TopicBatch(
+            topic_names=topic_names,
+            matched_concepts={
+                topic: tuple(expanded_preferences.get(topic, (topic,))[:10])
+                for topic in topic_names
+            },
+            topic_matrix=torch.stack(
+                [self.embedding_cache[document] for document in documents]
+            ),
+        )
 
-        return topic_profiles
+        self.topic_batch_cache[cache_key] = topic_batch
+        return topic_batch
 
     def _cache_missing_topic_embeddings(
         self,
-        documents_by_topic: Mapping[str, str],
+        documents: Sequence[str],
     ) -> None:
         """Encode only uncached topic documents and store normalized vectors."""
 
         missing_documents = [
             document
-            for document in documents_by_topic.values()
+            for document in documents
             if document not in self.embedding_cache
         ]
 
@@ -167,9 +201,10 @@ class AIRanker:
     def _encode_texts(self, texts: Sequence[str]) -> torch.Tensor:
         """Encode text and return L2-normalized embeddings."""
 
+        batch_texts = texts if isinstance(texts, list) else list(texts)
         with torch.inference_mode():
             embeddings = self.model.encode(
-                list(texts),
+                batch_texts,
                 convert_to_tensor=True,
             )
 
@@ -178,39 +213,49 @@ class AIRanker:
 
         return F.normalize(embeddings, p=2, dim=1)
 
+    def _compute_best_matches(
+        self,
+        video_embeddings: torch.Tensor,
+        topic_batch: TopicBatch,
+        interests: Mapping[str, int],
+    ) -> Tuple[List[int], List[float]]:
+        """Compute best topic indices and raw confidence scores in one pass."""
+
+        with torch.inference_mode():
+            similarity_matrix = torch.matmul(video_embeddings, topic_batch.topic_matrix.T)
+            interest_bias = self._build_interest_bias(
+                topic_batch.topic_names,
+                interests,
+                similarity_matrix,
+            )
+            weighted_similarity_matrix = similarity_matrix * interest_bias
+            best_indices_tensor = torch.argmax(weighted_similarity_matrix, dim=1)
+            best_scores_tensor = similarity_matrix.gather(
+                1,
+                best_indices_tensor.unsqueeze(1),
+            ).squeeze(1)
+
+        return best_indices_tensor.tolist(), best_scores_tensor.tolist()
+
     def _categorize_videos(
         self,
         videos: Sequence[Mapping[str, object]],
-        video_embeddings: torch.Tensor,
-        topic_profiles: Mapping[str, TopicProfile],
-        interests: Mapping[str, int],
-        expanded_preferences: Mapping[str, Sequence[str]],
+        topic_batch: TopicBatch,
+        best_indices: Sequence[int],
+        best_scores: Sequence[float],
     ) -> Dict[str, List[Dict[str, object]]]:
         """
-        Assign each video to its best topic using cosine similarity.
+        Assign each video to its best topic using precomputed tensor results.
 
         Unknown videos are hidden later, but are classified here so the
         distribution step can stay focused on accepted topic buckets.
         """
 
-        categorized_videos = {topic: [] for topic in topic_profiles}
+        categorized_videos = {topic: [] for topic in topic_batch.topic_names}
         categorized_videos["Unknown"] = []
 
-        topic_names = list(topic_profiles.keys())
-        topic_matrix = torch.stack(
-            [topic_profiles[topic].embedding for topic in topic_names]
-        )
-
-        similarity_matrix = torch.matmul(video_embeddings, topic_matrix.T)
-        interest_bias = self._build_interest_bias(topic_names, interests, similarity_matrix)
-        weighted_similarity_matrix = similarity_matrix * interest_bias
-
-        for video_index, video in enumerate(videos):
-            scores = similarity_matrix[video_index]
-            weighted_scores = weighted_similarity_matrix[video_index]
-            best_index = int(torch.argmax(weighted_scores).item())
-            best_topic = topic_names[best_index]
-            best_score = float(scores[best_index].item())
+        for video, best_index, best_score in zip(videos, best_indices, best_scores):
+            best_topic = topic_batch.topic_names[best_index]
 
             if best_score < self.bge_threshold:
                 categorized_videos["Unknown"].append(
@@ -227,7 +272,7 @@ class AIRanker:
                     video,
                     topic=best_topic,
                     confidence=best_score,
-                    matched_concepts=expanded_preferences.get(best_topic, [best_topic])[:10],
+                    matched_concepts=topic_batch.matched_concepts[best_topic],
                 )
             )
 
@@ -362,17 +407,19 @@ class AIRanker:
         self,
         preferences: Sequence[str],
         expanded_preferences: Mapping[str, object],
-    ) -> Dict[str, List[str]]:
+    ) -> Dict[str, Tuple[str, ...]]:
         """Normalize expander output and guarantee each topic has concepts."""
 
-        cleaned: Dict[str, List[str]] = {}
+        cleaned: Dict[str, Tuple[str, ...]] = {}
 
         for preference in preferences:
             raw_concepts = expanded_preferences.get(preference, [preference])
             if not isinstance(raw_concepts, list):
                 raw_concepts = [preference]
 
-            cleaned[preference] = self._clean_concepts([preference, *raw_concepts])
+            cleaned[preference] = tuple(
+                self._clean_concepts([preference, *raw_concepts])
+            )
 
         return cleaned
 
@@ -415,6 +462,41 @@ class AIRanker:
             bias_values,
             dtype=similarity_matrix.dtype,
             device=similarity_matrix.device,
+        )
+
+    def _profile_start(self) -> float | None:
+        """Return a timer start value only when profiling is enabled."""
+
+        if not ENABLE_PROFILING:
+            return None
+
+        return perf_counter()
+
+    def _profile_end(
+        self,
+        timings: Dict[str, float] | None,
+        name: str,
+        start: float | None,
+    ) -> None:
+        """Store an elapsed timing only when profiling is enabled."""
+
+        if timings is None or start is None:
+            return
+
+        timings[name] = perf_counter() - start
+
+    def _report_profile(self, timings: Dict[str, float] | None) -> None:
+        """Emit timing details only when explicit profiling is enabled."""
+
+        if timings is None:
+            return
+
+        print(
+            "Profiling: "
+            + ", ".join(
+                f"{name}={elapsed:.4f}s"
+                for name, elapsed in timings.items()
+            )
         )
 
     def _string_value(self, value: object) -> str:
