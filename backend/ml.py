@@ -39,9 +39,9 @@ class AIRanker:
         #
         # ========================================================
 
-        self.bge_threshold = 0.50
+        self.bge_threshold = 0.68
 
-        self.cross_encoder_threshold = -7.0
+        self.cross_encoder_threshold = 2.0
 
         # Number of strongest BGE concepts sent
         # to the Cross-Encoder.
