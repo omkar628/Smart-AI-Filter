@@ -1,21 +1,138 @@
 # SmartFeed AI
 
-SmartFeed AI is a Chrome extension and FastAPI backend that semantically re-ranks YouTube home feed videos based on a user's selected interests.
+SmartFeed AI is a Chrome extension backed by a FastAPI service that reshapes the YouTube home feed around the topics a user actually cares about.
 
-Instead of relying on exact keyword matches, the system expands user interests into related concepts, embeds both the video metadata and concepts, measures semantic similarity, and uses a second-stage cross-encoder to validate the match.
+Instead of relying on exact keyword matches, the system expands user interests into related concepts, compares those concepts against live YouTube recommendations with semantic embeddings, and keeps the videos that best match the user's weighted preference mix.
 
-## Features
+## Overview
 
-- Semantic YouTube feed filtering based on weighted interests
+Most recommendation filters break down when the wording in a video title does not exactly match the user's interests. SmartFeed AI addresses that by using semantic search.
+
+The product flow is simple:
+
+1. The user creates a topic mix inside the Chrome extension, such as `programming 80%`, `music 10%`, and `editing 10%`.
+2. The extension reads visible cards from the YouTube home feed.
+3. The backend expands each topic into related concepts using Groq.
+4. Video metadata and expanded concepts are embedded with `BAAI/bge-base-en-v1.5`.
+5. Each video is assigned to the strongest matching topic.
+6. Low-confidence matches are removed, and accepted cards are labeled with an AI match badge.
+
+The result is a more intentional home feed that reflects what the user wants to see right now.
+
+## Before And After
+
+Before filtering, the YouTube home page contains a broad mix of unrelated recommendations.
+
+After SmartFeed AI runs, the feed is narrowed to the user's preferred categories, matched cards are visually highlighted, and off-topic content is removed from view.
+
+This makes the extension especially useful for focused browsing sessions such as study, coding, interview prep, research, or hobby-specific discovery.
+
+## Key Features
+
+- Weighted interest-based filtering for the YouTube home feed
+- Semantic topic matching instead of raw keyword comparison
+- Groq-powered preference expansion for richer topic coverage
 - FastAPI backend for ranking and classification
-- Chrome extension UI for managing topic weights
-- Two-stage AI ranking pipeline:
-  - `BAAI/bge-base-en-v1.5` for semantic retrieval
-  - `cross-encoder/ms-marco-MiniLM-L6-v2` for relevance verification
-- Groq-powered interest expansion for richer concept coverage
-- Docker support for cloud deployment
+- Chrome extension popup for saving a custom topic mix
+- Visual AI match badges for accepted videos
+- Automatic removal of low-relevance or out-of-distribution videos
+- Railway-ready backend deployment with Docker support
 
-## Project Structure
+## How It Works
+
+### 1. Preference Capture
+
+The extension popup lets the user define topics and allocate weights that add up to `100%`.
+
+Example:
+
+```text
+Programming: 80
+Music: 10
+Editing: 10
+```
+
+These preferences are stored locally in the browser and used whenever the user opens YouTube.
+
+### 2. Feed Extraction
+
+The content script scans the YouTube home page, extracts newly rendered video cards, and builds a payload containing:
+
+- `video_id`
+- `title`
+- `channel`
+- `description`
+
+### 3. Semantic Expansion
+
+The backend sends the selected interests to Groq and asks for distinct, non-overlapping related concepts for each topic.
+
+For example, `Programming` may expand into concepts such as:
+
+- `Software Development`
+- `Coding Tutorial`
+- `Python Project`
+- `Algorithm Practice`
+
+This improves recall without reducing topical precision.
+
+### 4. Embedding And Matching
+
+SmartFeed AI uses `BAAI/bge-base-en-v1.5` to encode:
+
+- each video as a semantic document
+- each topic plus its expanded concepts as a semantic document
+
+The backend then:
+
+- computes cosine similarity between videos and topics
+- applies a small bias based on the user's configured weights
+- chooses the best matching topic per video
+- hides videos below the relevance threshold
+
+### 5. Feed Refinement
+
+Accepted videos remain visible and receive a match badge such as:
+
+```text
+PROGRAMMING MATCH 62.7%
+```
+
+Rejected videos are removed from the page with a transition, and the remaining cards are reflowed smoothly.
+
+## Architecture
+
+```text
+Chrome Extension
+  |- popup/
+  |  `- collects user topics and weights
+  |- scripts/content.js
+  |  `- extracts YouTube cards and applies UI changes
+  `- scripts/background.js
+     `- sends feed data to the backend
+
+FastAPI Backend
+  |- main.py
+  |  `- request validation and API endpoints
+  |- ml.py
+  |  `- semantic ranking pipeline
+  `- preference_expander.py
+     `- Groq-based topic expansion
+```
+
+## Tech Stack
+
+- Chrome Extension Manifest V3
+- FastAPI
+- Pydantic
+- Sentence Transformers
+- `BAAI/bge-base-en-v1.5`
+- PyTorch
+- Groq API
+- Docker
+- Railway
+
+## Repository Structure
 
 ```text
 Smart-AI-Filter/
@@ -33,39 +150,15 @@ Smart-AI-Filter/
 `-- README.md
 ```
 
-## How It Works
+## Getting Started
 
-1. The Chrome extension extracts video titles and channels from the YouTube home feed.
-2. It sends the extracted videos and user interest weights to the backend.
-3. The backend expands each interest into related concepts using Groq.
-4. Each video is converted into text in this form:
-   `Title: <title>. Channel: <channel>.`
-5. The backend computes semantic similarity between the video text and each expanded concept using BGE embeddings.
-6. The strongest concept matches are re-scored by a cross-encoder.
-7. A video is accepted only if it passes both thresholds.
+### Prerequisites
 
-## Similarity Pipeline
+- Python 3.10 or newer
+- Google Chrome
+- A Groq API key
 
-The backend does not compare raw keywords to titles directly.
-
-- User interest:
-  Example: `Programming`
-- Expanded concepts:
-  Example: `Programming`, `Software Development`, `Coding Tutorial`, `Python Project`, and similar terms
-- Video text:
-  `Title: Learn Python by Building 5 Projects. Channel: CodeWithExample.`
-
-The model then:
-
-- generates embeddings for the video text and concepts,
-- computes cosine similarity,
-- keeps the top concept matches,
-- applies a weighted top-k score,
-- verifies the best candidate matches with a cross-encoder.
-
-## Backend Setup
-
-### Local Python setup
+### 1. Run The Backend Locally
 
 ```powershell
 cd backend
@@ -74,43 +167,44 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-Create a `backend/.env` file:
+Create `backend/.env`:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
 ```
 
-Run the backend:
+Start the API:
 
 ```powershell
 cd backend
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Backend URLs:
+Available endpoints:
 
 - `GET /`
 - `GET /health`
 - `POST /api/v1/rank-feed`
 
-## Chrome Extension Setup
+### 2. Load The Chrome Extension
 
-1. Open Chrome and go to `chrome://extensions`.
-2. Enable Developer Mode.
-3. Click `Load unpacked`.
-4. Select the `chrome_extension` folder.
-5. Open YouTube and use the extension popup to save your interest mix.
+1. Open `chrome://extensions/`
+2. Enable `Developer mode`
+3. Click `Load unpacked`
+4. Select the `chrome_extension` folder
+5. Open YouTube
+6. Configure your topic mix in the extension popup
 
-## API Request Format
+## API Example
 
-`POST /api/v1/rank-feed`
+### Request
 
 ```json
 {
   "interests": {
-    "JEE Advanced": 50,
-    "Programming": 30,
-    "Artificial Intelligence": 20
+    "Programming": 80,
+    "Music": 10,
+    "Editing": 10
   },
   "videos": [
     {
@@ -123,64 +217,93 @@ Backend URLs:
 }
 ```
 
-## Railway Deployment
+### Response Shape
 
-This repository is set up so Railway can build using `backend/Dockerfile` from the repository root context.
+```json
+{
+  "ranked_videos": [
+    {
+      "video_id": "abc123",
+      "title": "Top 10 Dynamic Programming Problems",
+      "description": "",
+      "channel": "CodeBasics",
+      "topic": "Programming",
+      "confidence": 0.627,
+      "matched_concepts": [
+        "Programming",
+        "Software Development",
+        "Coding Tutorial"
+      ],
+      "action": "Show"
+    }
+  ]
+}
+```
 
-### Recommended Railway settings
+## Deployment
+
+The backend is prepared for Railway deployment through `backend/Dockerfile`.
+
+Recommended settings:
 
 - Root directory: repository root
 - Dockerfile path: `backend/Dockerfile`
 
-### Required environment variables
+Required environment variables:
 
 - `GROQ_API_KEY`
 
-### Notes
+Notes:
 
-- The Dockerfile now honors Railway's injected `PORT`.
-- A root-level `.dockerignore` is included to keep the build context small.
-- The backend exposes `/health` so you can quickly verify startup status.
+- The Dockerfile supports Railway's injected `PORT`
+- A root-level `.dockerignore` keeps the build context smaller
+- `/health` can be used as a simple post-deploy health check
+
+## Local Development Notes
+
+- `chrome_extension/scripts/content.js` runs on YouTube pages and processes newly loaded cards
+- `chrome_extension/scripts/background.js` tries the deployed Railway API first, then falls back to `http://localhost:8000`
+- `backend/ml.py` contains the semantic ranking logic and topic-weight biasing
+- `backend/preference_expander.py` handles concept generation through Groq
+
+## Current Scope
+
+SmartFeed AI currently focuses on the YouTube home feed experience. It is designed to:
+
+- keep high-confidence topic matches visible
+- remove low-confidence or off-topic recommendations
+- honor the user's weighted topic distribution
+
+It is not yet positioned as a full recommendation replacement or a cross-platform filtering system.
 
 ## Troubleshooting
 
-### Docker build error: `requirements.docker.txt not found`
+### Backend returns `503`
 
-This happens when the Docker build context is the repository root but the Dockerfile tries to copy files as if the build context were `backend/`.
+Check the following:
 
-This repository already includes the fix by copying:
-
-```dockerfile
-COPY backend/requirements.docker.txt ./requirements.docker.txt
-COPY backend/ .
-```
-
-### Backend returns 503
-
-Check:
-
-- `GROQ_API_KEY` is set correctly
-- model downloads are allowed in the deployment environment
-- the service has enough memory to load the embedding and cross-encoder models
+- `GROQ_API_KEY` is present and valid
+- model downloads are allowed in the environment
+- the runtime has enough memory for the embedding model
 
 ### Extension cannot reach the backend
 
-The extension currently targets:
+The extension currently attempts these endpoints:
 
+- `https://smart-ai-filter-production.up.railway.app/api/v1/rank-feed`
 - `http://localhost:8000/api/v1/rank-feed`
 
-If you want the extension to use Railway instead of your local backend, update `chrome_extension/scripts/background.js` and `chrome_extension/manifest.json` to point to your deployed API domain.
+If both are unavailable, the request will fail.
 
-## Development Notes
+### No changes appear on YouTube
 
-- `backend/ml.py` contains the ranking pipeline
-- `backend/preference_expander.py` contains Groq-based concept expansion
-- `chrome_extension/scripts/content.js` extracts YouTube feed data
-- `chrome_extension/scripts/background.js` sends data to the API
+Check the following:
 
-## Next Steps Before Pushing
+- the extension is loaded successfully
+- your preferences were saved in the popup
+- the total topic allocation equals `100%`
+- you are on the YouTube home page
 
-1. Add your Railway environment variables.
-2. Redeploy once to confirm `/health` returns ready status.
-3. If you want, update the extension backend URL to your Railway domain.
-4. Commit and push the repository to GitHub.
+## Summary
+
+SmartFeed AI combines a Chrome extension, a FastAPI service, semantic embeddings, and LLM-based preference expansion to turn YouTube's generic home feed into a focused, user-shaped content experience.
